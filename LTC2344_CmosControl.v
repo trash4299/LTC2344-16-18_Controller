@@ -1,16 +1,35 @@
 `timescale 1ns / 1ps
+//////////////////////////////////////////////////////////////////////////////////
+// Company: QorTek
+// Engineer: V. Lobo
+// 
+// Create Date:    12:27:58 09/15/2009 
+// Design Name: 
+// Module Name:    ADC controller
+// Project Name: 
+// Target Devices: LTC2344-18/LTC2344-16 ADC
+// Tool versions: 
+// Description: 
+//
+// Dependencies: 
+//
+// Revision: 
+// Revision 0.01 - File Created
+// Additional Comments:
+//         Make sure to set the SoftSpan input on the block diagram
+// 		   SoftSpan is abbreviated to SS
+//
+//////////////////////////////////////////////////////////////////////////////////
+
+
 module LTC2344_CMOS # 
 (
-	parameter initial_SoftSpan = 12'b000000111111
+	parameter initial_SoftSpan = 12'b111111111111
 )
 (
 	output reg CS = 1, //Chip Select, Serial data output is enabled when CS is low
 	input[3:0] SDO, //Digital Data In
-//	input SDO0, //Digital Data In - Channel 1
-//	input SDO1, //Digital Data In - Channel 2
-//	input SDO2, //Digital Data In - Channel 3
-//	input SDO3, //Digital Data In - Channel 4
-	input busy, //data can be read on the serial clock cycle after busy goes low
+	input busy, //Busy signal from the ADC
 	output SCLK, //Serial Clock
 	
 	output reg cnv = 0, //Start Signal
@@ -28,7 +47,7 @@ module LTC2344_CMOS #
 	input [11:0] softspan, //used before every conversion to set the input range, output 
 	input extTrig, //External Trigger
 	input serialClock,
-	output reg[4:0] progressCounter = STARTUP														//turned into an ouput for testing
+	output reg[4:0] progressCounter = 5'd1														//turned into an ouput for testing
 	);
 	
 	//reg [4:0] progressCounter = 5'd30; //Keep track of state machine							turned into an ouput for testing
@@ -37,7 +56,8 @@ module LTC2344_CMOS #
 	reg [15:0] temp1 = 16'd0; //temporary storage for second ADC data
 	reg [15:0] temp2 = 16'd0; //temporary storage for third ADC data
 	reg [15:0] temp3 = 16'd0; //temporary storage for fourth ADC data
-	reg [11:0] SDI_reg = initial_SoftSpan; //Defaulted to softspan 7 for four channels				should disable channels 3 and 4 for testing
+	reg [11:0] SDI_reg = initial_SoftSpan; //Defaulted to softspan 7 for four channels
+	reg [2:0] clockCount = 4'd0, busyCount = 4'd0;
 	
 	localparam STARTUP = 5'd0, READY = 5'd1, CONVERT0 = 5'd2, AQ17 = 5'd4, AQ16 = 5'd5, AQ15 = 5'd6, AQ14 = 5'd7, AQ13 = 5'd8, AQ12 = 5'd9, AQ11 = 5'd10, AQ10 = 5'd11, AQ9 = 5'd12, AQ8 = 5'd13, AQ7 = 5'd14, AQ6 = 5'd15, AQ5 = 5'd16, AQ4 = 5'd17, AQ3 = 5'd18, AQ2 = 5'd19, AQ1 = 5'd20, AQ0 = 5'd21;
 	localparam CONVERT1 = 5'd3, OUTPUTS = 5'd22, RESTART = 5'd23;
@@ -47,18 +67,27 @@ module LTC2344_CMOS #
       .clk_out(SCLK)  // output wire clk_out
     );
 	
+	always @ (posedge serialClock) begin
+		if(cnv) begin
+			if(clockCount == 3'd1) begin
+				cnv <= 0;
+				clockCount <= 0;
+			end
+			else
+				clockCount <= clockCount + 1'd1;
+		end
+	end
 	
-	always @ (posedge serialClock)
-	begin
+	always @ (posedge serialClock) begin
 		case (progressCounter)
-			STARTUP : begin 												//On startup the ADC is set to SS7 for all 4 channels. This runs a quick conversion so it can then input the initial SS config set in block diagram GUI
+			STARTUP : begin 									//On startup the ADC is set to SS7 for all 4 channels. This runs a quick conversion so it can then input the initial SS config set in block diagram GUI
 				case(startupCount)
 					1 : begin
 						cnv <= 1;
 						SDI_reg <= initial_SoftSpan;
 						startupCount <= 5'd2;
 					end
-					2 : begin 
+					2 : begin
 						if(busy)
 							startupCount <= 5'd3;
 						else
@@ -66,7 +95,6 @@ module LTC2344_CMOS #
 					end
 					3 : begin
 						if(busy == 0) begin
-							cnv <= 0;
 							startupCount <= 5'd4;
 							CS <= 0;
 						end
@@ -134,6 +162,7 @@ module LTC2344_CMOS #
 			READY : begin //Wait for the trigger
 				dataRdy <= 1'd0;
 				SDI_reg <= softspan;
+				busyCount <= 4'd0;
 				if (extTrig) begin
 					if(!busy) begin 
 						progressCounter <= CONVERT0;
@@ -147,17 +176,24 @@ module LTC2344_CMOS #
 			// CONVERT
 			CONVERT0 : begin 
 				SDI_reg <= softspan;
-				
-				if(busy)
+				if(busy) begin
 					progressCounter <= CONVERT1;
-				else
-					progressCounter <= CONVERT0;
+				end
+				else begin
+					if(busyCount == 4'd4) begin
+						progressCounter <= READY;
+						busyCount <= 4'd0;
+					end
+					else begin
+						progressCounter <= CONVERT0;
+						busyCount <= busyCount + 1'd1;
+					end
+				end
 			end
 			
 			CONVERT1 : begin
 				if(busy == 0) begin
 					CS <= 0;
-					cnv <= 0;
 					progressCounter <= AQ15;
 				end
 				else
@@ -197,18 +233,12 @@ module LTC2344_CMOS #
 //					progressCounter <= progressCounter + 1'b1;
 //				end
 			AQ15 : begin
-				//if(busy == 0) begin
-					cnv <= 0;
-					//CS <= 0;
-					progressCounter <= AQ14;
 					temp0[15] = SDO[0];
 					temp1[15] = SDO[1];
 					temp2[15] = SDO[2];
 					temp3[15] = SDO[3];
 					SDI = SDI_reg[11];
-				//end
-				//else
-				//	progressCounter <= AQ15;
+					progressCounter <= AQ14;
 			end
 			AQ14 : begin
 				temp0[14] = SDO[0];
